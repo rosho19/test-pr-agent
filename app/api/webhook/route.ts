@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { reviewPR } from '@/lib/agent';
-import { prisma } from '@/lib/db';
+import { reviewPR } from '@/server/agent';
+import { prisma } from '@/server/db';
 
 const SECRET = process.env.GITHUB_WEBHOOK_SECRET ?? '';
 
