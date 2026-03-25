@@ -18,7 +18,11 @@ export async function GET() {
       arguments: { owner, repo: repoName, state: 'open' },
     });
 
-    const prs = Array.isArray(result.data) ? result.data : [];
+    const prs: any[] = Array.isArray(result.data)
+      ? result.data
+      : Array.isArray((result.data as any)?.pull_requests)
+      ? (result.data as any).pull_requests
+      : [];
 
     const simplified = prs.map((pr: any) => ({
       number: pr.number,

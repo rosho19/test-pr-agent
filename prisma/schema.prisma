@@ -24,9 +24,3 @@ model Review {
   toolCalls String   // JSON array of tool call names
   createdAt DateTime @default(now())
 }
-
-model Settings {
-  id           String @id @default("default")
-  repo         String @default("")
-  slackChannel String @default("")
-}
