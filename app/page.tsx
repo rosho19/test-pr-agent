@@ -28,11 +28,20 @@ interface PR {
   draft: boolean;
 }
 
+type IssueSeverity = 'low' | 'medium' | 'high';
+
 interface Issue {
   file: string;
   line: number;
   description: string;
+  severity?: IssueSeverity;
 }
+
+const SEVERITY_STYLES: Record<IssueSeverity, string> = {
+  high:   'bg-red-900/40 text-red-400 border-red-800/40',
+  medium: 'bg-amber-900/40 text-amber-400 border-amber-800/40',
+  low:    'bg-zinc-800/60 text-zinc-400 border-zinc-700/40',
+};
 
 interface Review {
   id: string;
@@ -405,22 +414,25 @@ function ReviewPanel({
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-4 space-y-3">
-            {review.issues.map((issue, i) => (
-              <div key={i} className="rounded-lg bg-zinc-800/60 p-3">
-                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <code className="text-xs text-violet-300 font-mono">{issue.file}</code>
-                  {issue.line > 0 && (
-                    <Badge
-                      variant="outline"
-                      className="text-xs border-zinc-700 text-zinc-500 px-1.5 py-0"
-                    >
-                      line {issue.line}
+            {review.issues.map((issue, i) => {
+              const sev = issue.severity ?? 'low';
+              return (
+                <div key={i} className="rounded-lg bg-zinc-800/60 p-3">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <code className="text-xs text-violet-300 font-mono">{issue.file}</code>
+                    {issue.line > 0 && (
+                      <Badge variant="outline" className="text-xs border-zinc-700 text-zinc-500 px-1.5 py-0">
+                        line {issue.line}
+                      </Badge>
+                    )}
+                    <Badge className={`text-xs border px-1.5 py-0 ml-auto capitalize ${SEVERITY_STYLES[sev]}`}>
+                      {sev}
                     </Badge>
-                  )}
+                  </div>
+                  <p className="text-sm text-zinc-400">{issue.description}</p>
                 </div>
-                <p className="text-sm text-zinc-400">{issue.description}</p>
-              </div>
-            ))}
+              );
+            })}
           </CardContent>
         </Card>
       )}

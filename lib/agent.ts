@@ -13,9 +13,18 @@ function toAnthropicTools(openaiTools: any[]): Anthropic.Tool[] {
   }));
 }
 
+export type IssueSeverity = 'low' | 'medium' | 'high';
+
+export interface ReviewIssue {
+  file: string;
+  line: number;
+  description: string;
+  severity: IssueSeverity;
+}
+
 export interface ReviewResult {
   summary: string;
-  issues: Array<{ file: string; line: number; description: string }>;
+  issues: ReviewIssue[];
   suggestion: string;
   toolCalls: string[];
 }
@@ -59,10 +68,15 @@ After completing all tool calls, output a final JSON block in this exact format:
 <review_json>
 {
   "summary": "One paragraph summary of the overall review",
-  "issues": [{"file": "path/to/file.ts", "line": 42, "description": "Specific issue description"}],
+  "issues": [{"file": "path/to/file.ts", "line": 42, "description": "Specific issue description", "severity": "low | medium | high"}],
   "suggestion": "Most important single improvement to make"
 }
-</review_json>`;
+</review_json>
+
+Severity guide:
+- high: security vulnerabilities, data loss risk, crashes, broken logic
+- medium: performance problems, missing error handling, incorrect types
+- low: style, naming, minor improvements, missing comments`;
 
   const messages: Anthropic.MessageParam[] = [
     {
