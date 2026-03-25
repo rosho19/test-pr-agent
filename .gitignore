@@ -39,3 +39,19 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/lib/generated/prisma
+
+# database
+/prisma/*.db
+/prisma/*.db-shm
+/prisma/*.db-wal
+
+# python venv
+/.venv
+
+# scripts (dev tooling only)
+/scripts
+
+# claude settings
+.claude/
