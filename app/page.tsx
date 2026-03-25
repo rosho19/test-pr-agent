@@ -1,23 +1,20 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { formatPrDate } from '@/lib/format-pr-date';
 import { Button } from '@/components/ui/button';
-import { Separator } from '@/components/ui/separator';
 import {
-  GitPullRequest,
   RefreshCw,
   Loader2,
   CheckCircle2,
   AlertCircle,
-  Wrench,
-  MessageSquare,
   ChevronDown,
   ChevronUp,
-  Clock,
-  User,
+  Sparkles,
+  ExternalLink,
 } from 'lucide-react';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PR {
   number: number;
@@ -37,12 +34,6 @@ interface Issue {
   severity?: IssueSeverity;
 }
 
-const SEVERITY_STYLES: Record<IssueSeverity, string> = {
-  high:   'bg-red-900/40 text-red-400 border-red-800/40',
-  medium: 'bg-amber-900/40 text-amber-400 border-amber-800/40',
-  low:    'bg-zinc-800/60 text-zinc-400 border-zinc-700/40',
-};
-
 interface Review {
   id: string;
   prNumber: number;
@@ -56,25 +47,42 @@ interface Review {
   createdAt: string;
 }
 
-type ReviewState =
-  | { status: 'idle' }
-  | { status: 'loading'; prNumber: number }
-  | { status: 'done'; review: Review }
-  | { status: 'error'; message: string };
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-const TOOL_LABELS: Record<string, string> = {
-  GITHUB_GET_A_PULL_REQUEST: 'Fetched PR metadata',
-  GITHUB_LIST_PULL_REQUESTS_FILES: 'Read changed files & diffs',
-  GITHUB_CREATE_A_REVIEW_FOR_A_PULL_REQUEST: 'Posted review to GitHub',
-  SLACK_SEND_MESSAGE: 'Sent summary to Slack',
+const SEV_DOT: Record<IssueSeverity, string> = {
+  high:   'bg-red-400',
+  medium: 'bg-amber-400',
+  low:    'bg-slate-500',
 };
 
+const SEV_TEXT: Record<IssueSeverity, string> = {
+  high:   'text-red-400',
+  medium: 'text-amber-400',
+  low:    'text-slate-400',
+};
+
+const TOOL_LABELS: Record<string, string> = {
+  GITHUB_GET_A_PULL_REQUEST:                 'Fetched PR metadata',
+  GITHUB_LIST_PULL_REQUESTS_FILES:           'Read changed files & diffs',
+  GITHUB_CREATE_A_REVIEW_FOR_A_PULL_REQUEST: 'Posted inline review to GitHub',
+  SLACK_SEND_MESSAGE:                        'Sent Slack notification',
+};
+
+const GITHUB_REPO = process.env.NEXT_PUBLIC_GITHUB_REPO ?? '';
+
+const MISSING_CONFIG: string[] = [];
+if (!GITHUB_REPO) MISSING_CONFIG.push('NEXT_PUBLIC_GITHUB_REPO');
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
 export default function Dashboard() {
-  const [prs, setPrs] = useState<PR[]>([]);
+  const [prs, setPrs]               = useState<PR[]>([]);
   const [prsLoading, setPrsLoading] = useState(true);
-  const [prsError, setPrsError] = useState<string | null>(null);
-  const [reviewState, setReviewState] = useState<ReviewState>({ status: 'idle' });
-  const [history, setHistory] = useState<Review[]>([]);
+  const [prsError, setPrsError]     = useState<string | null>(null);
+  const [history, setHistory]       = useState<Review[]>([]);
+  const [selectedPr, setSelectedPr] = useState<number | null>(null);
+  const [reviewing, setReviewing]   = useState<number | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const [toolsExpanded, setToolsExpanded] = useState(false);
 
   const fetchPRs = useCallback(async () => {
@@ -82,10 +90,7 @@ export default function Dashboard() {
     setPrsError(null);
     try {
       const res = await fetch('/api/prs');
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error ?? 'Failed to fetch PRs');
-      }
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Failed to fetch PRs');
       setPrs(await res.json());
     } catch (err: any) {
       setPrsError(err.message);
@@ -99,147 +104,175 @@ export default function Dashboard() {
     if (res.ok) setHistory(await res.json());
   }, []);
 
-  useEffect(() => {
-    fetchPRs();
-    fetchHistory();
-  }, [fetchPRs, fetchHistory]);
+  useEffect(() => { fetchPRs(); fetchHistory(); }, [fetchPRs, fetchHistory]);
+
+  function handleSelectPr(n: number) {
+    setSelectedPr((prev) => (prev === n ? null : n));
+    setReviewError(null);
+    setToolsExpanded(false);
+  }
 
   async function triggerReview(pr: PR) {
-    setReviewState({ status: 'loading', prNumber: pr.number });
-    setToolsExpanded(false);
+    if (history.some((r) => r.prNumber === pr.number)) return;
+    setReviewing(pr.number);
+    setReviewError(null);
     try {
       const res = await fetch('/api/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prNumber: pr.number,
-          prTitle: pr.title,
-          prUrl: pr.url,
-          author: pr.author,
-        }),
+        body: JSON.stringify({ prNumber: pr.number, prTitle: pr.title, prUrl: pr.url, author: pr.author }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Review failed');
-      setReviewState({ status: 'done', review: data });
-      fetchHistory();
+      await fetchHistory();
     } catch (err: any) {
-      setReviewState({ status: 'error', message: err.message });
+      setReviewError(err.message);
+    } finally {
+      setReviewing(null);
     }
   }
 
+  const activePr       = prs.find((p) => p.number === selectedPr) ?? null;
+  const existingReview = history.find((r) => r.prNumber === selectedPr) ?? null;
+  const isReviewing    = reviewing === selectedPr;
+
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      {/* Header */}
-      <header className="border-b border-zinc-800 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <GitPullRequest className="w-6 h-6 text-violet-400" />
-          <h1 className="text-lg font-semibold tracking-tight">PR Review Agent</h1>
-          <Badge variant="outline" className="text-zinc-400 border-zinc-700 font-mono text-xs">
-            rosho19/test-pr-agent
-          </Badge>
+    <div
+      className="h-screen flex flex-col overflow-hidden select-none"
+      style={{ background: '#141414', color: 'var(--foreground)', fontFamily: 'var(--font-inter), system-ui, sans-serif' }}
+    >
+      {/* ── Config banner ── */}
+      {MISSING_CONFIG.length > 0 && (
+        <div
+          className="shrink-0 flex items-center justify-center gap-2 px-4 py-2 text-xs"
+          style={{ background: 'rgba(245,158,11,0.1)', borderBottom: '1px solid rgba(245,158,11,0.2)', color: '#f59e0b' }}
+        >
+          <AlertCircle className="w-3 h-3 shrink-0" />
+          <span style={{ fontFamily: 'var(--font-geist-mono)' }}>
+            Missing env vars: {MISSING_CONFIG.join(', ')} — copy <strong>.env.example</strong> to <strong>.env.local</strong> and restart
+          </span>
         </div>
-        <div className="flex items-center gap-2 text-xs text-zinc-500">
-          <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
-          Claude Sonnet · Composio
+      )}
+      {/* ── Header ── */}
+      <header
+        className="shrink-0 flex items-center justify-between px-5"
+        style={{ height: 44, borderBottom: '1px solid #2a2a2a', background: '#141414' }}
+      >
+        <div className="flex items-center gap-3">
+          {/* Composio-style logo mark */}
+          <div className="flex items-center gap-2">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <rect width="18" height="18" rx="3" fill="#4f6ef7"/>
+              <path d="M5 9h8M9 5v8" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+            </svg>
+            <span className="text-sm font-semibold text-white tracking-tight">PR Review Agent</span>
+          </div>
+          <span style={{ color: 'var(--text-faint)' }}>/</span>
+          <span className="text-xs" style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-label)' }}>
+            {GITHUB_REPO || 'not configured'}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+          <span className="text-xs" style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-label)' }}>
+            claude-sonnet · composio
+          </span>
         </div>
       </header>
 
-      <div className="flex h-[calc(100vh-61px)]">
-        {/* Left panel — PR list */}
-        <aside className="w-80 shrink-0 border-r border-zinc-800 flex flex-col">
-          <div className="px-4 py-3 flex items-center justify-between border-b border-zinc-800">
-            <span className="text-sm font-medium text-zinc-300">Open Pull Requests</span>
-            <Button
-              variant="ghost"
-              size="sm"
+      <div className="flex flex-1 min-h-0">
+
+        {/* ── Sidebar ── */}
+        <aside
+          className="shrink-0 flex flex-col"
+          style={{ width: 252, borderRight: '1px solid #2a2a2a', background: '#141414' }}
+        >
+          {/* Sidebar header */}
+          <div
+            className="flex items-center justify-between px-4"
+            style={{ height: 36, borderBottom: '1px solid #2a2a2a' }}
+          >
+            <span
+              className="text-[10px] font-semibold tracking-widest"
+              style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-label)', letterSpacing: '0.1em' }}
+            >
+              PULL_REQUESTS
+            </span>
+            <button
               onClick={fetchPRs}
               disabled={prsLoading}
-              className="h-7 px-2 text-zinc-400 hover:text-zinc-100"
+              className="transition-colors disabled:opacity-30"
+              style={{ color: 'var(--text-label)' }}
+              onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-body-soft)')}
+              onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-label)')}
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${prsLoading ? 'animate-spin' : ''}`} />
-            </Button>
+              <RefreshCw className={`w-3 h-3 ${prsLoading ? 'animate-spin' : ''}`} />
+            </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {/* PR list */}
+          <div className="flex-1 overflow-y-auto py-1">
             {prsLoading ? (
-              <div className="flex items-center justify-center py-12 text-zinc-500">
-                <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                <span className="text-sm">Loading PRs…</span>
+              <div className="flex items-center justify-center py-10 gap-2" style={{ color: 'var(--text-label)' }}>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span className="text-xs" style={{ fontFamily: 'var(--font-geist-mono)' }}>loading...</span>
               </div>
             ) : prsError ? (
-              <div className="p-3 rounded-lg bg-red-950/40 border border-red-800/50">
+              <div className="mx-3 my-2 px-3 py-2" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 4 }}>
                 <p className="text-xs text-red-400">{prsError}</p>
               </div>
             ) : prs.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 gap-2 text-zinc-500">
-                <GitPullRequest className="w-8 h-8 opacity-30" />
-                <p className="text-sm">No open PRs</p>
-                <p className="text-xs text-center text-zinc-600">
-                  Create a pull request in<br />
-                  <span className="font-mono text-zinc-500">rosho19/test-pr-agent</span>
-                </p>
+              <div className="flex flex-col items-center justify-center py-12 gap-2" style={{ color: 'var(--text-faint)' }}>
+                <span className="text-[10px]" style={{ fontFamily: 'var(--font-geist-mono)' }}>// no open pull requests</span>
               </div>
             ) : (
-              prs.map((pr) => (
-                <PRCard
-                  key={pr.number}
-                  pr={pr}
-                  isReviewing={
-                    reviewState.status === 'loading' && reviewState.prNumber === pr.number
-                  }
-                  onReview={() => triggerReview(pr)}
-                  disabled={reviewState.status === 'loading'}
-                />
-              ))
+              <div className="px-2 pt-1 space-y-px">
+                {prs.map((pr) => {
+                  const isReviewed = history.some((r) => r.prNumber === pr.number);
+                  const isSelected = selectedPr === pr.number;
+                  const isRunning  = reviewing === pr.number;
+                  return (
+                    <PRRow
+                      key={pr.number}
+                      pr={pr}
+                      isSelected={isSelected}
+                      isReviewed={isReviewed}
+                      isRunning={isRunning}
+                      onClick={() => handleSelectPr(pr.number)}
+                    />
+                  );
+                })}
+              </div>
             )}
           </div>
         </aside>
 
-        {/* Right panel — review output */}
-        <main className="flex-1 overflow-y-auto p-6 space-y-6">
-          {reviewState.status === 'idle' && history.length === 0 && <EmptyState />}
-
-          {reviewState.status === 'loading' && (
-            <AgentRunning prNumber={reviewState.prNumber} />
-          )}
-
-          {reviewState.status === 'error' && (
-            <div className="rounded-xl border border-red-800/50 bg-red-950/30 p-5">
-              <div className="flex items-center gap-2 text-red-400 mb-1">
-                <AlertCircle className="w-4 h-4" />
-                <span className="font-medium text-sm">Review failed</span>
-              </div>
-              <p className="text-sm text-red-300/80">{reviewState.message}</p>
+        {/* ── Main panel ── */}
+        <main className="flex-1 overflow-y-auto" style={{ background: '#141414' }}>
+          {selectedPr === null ? (
+            <EmptyState />
+          ) : isReviewing ? (
+            <div className="p-8 max-w-2xl">
+              <AgentRunning prNumber={selectedPr} />
             </div>
-          )}
-
-          {reviewState.status === 'done' && (
-            <ReviewPanel
-              review={reviewState.review}
-              toolsExpanded={toolsExpanded}
-              onToggleTools={() => setToolsExpanded((v) => !v)}
-            />
-          )}
-
-          {/* Review history */}
-          {history.length > 0 && reviewState.status !== 'loading' && (
-            <div>
-              <p className="text-xs font-medium text-zinc-500 uppercase tracking-widest mb-3">
-                Review History
-              </p>
-              <div className="space-y-2">
-                {history.map((r) => (
-                  <HistoryCard
-                    key={r.id}
-                    review={r}
-                    onClick={() => {
-                      setReviewState({ status: 'done', review: r });
-                      setToolsExpanded(false);
-                    }}
-                  />
-                ))}
-              </div>
+          ) : reviewError ? (
+            <div className="p-8 max-w-2xl">
+              <ErrorPanel message={reviewError} onDismiss={() => setReviewError(null)} />
             </div>
+          ) : existingReview ? (
+            <div className="p-8 max-w-2xl">
+              <ReviewPanel
+                review={existingReview}
+                toolsExpanded={toolsExpanded}
+                onToggleTools={() => setToolsExpanded((v) => !v)}
+              />
+            </div>
+          ) : activePr ? (
+            <div className="p-8 max-w-2xl">
+              <ReadyToReview pr={activePr} onReview={() => triggerReview(activePr)} />
+            </div>
+          ) : (
+            <EmptyState />
           )}
         </main>
       </div>
@@ -247,104 +280,231 @@ export default function Dashboard() {
   );
 }
 
-function PRCard({
-  pr,
-  isReviewing,
-  onReview,
-  disabled,
-}: {
-  pr: PR;
-  isReviewing: boolean;
-  onReview: () => void;
-  disabled: boolean;
+// ─── Sidebar row ──────────────────────────────────────────────────────────────
+
+function PRRow({ pr, isSelected, isReviewed, isRunning, onClick }: {
+  pr: PR; isSelected: boolean; isReviewed: boolean; isRunning: boolean; onClick: () => void;
 }) {
+  const bg     = isSelected ? 'rgba(79,110,247,0.1)' : 'transparent';
+  const border = isSelected ? '1px solid rgba(79,110,247,0.25)' : '1px solid transparent';
+
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3 space-y-2 hover:border-zinc-700 transition-colors">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-sm font-medium leading-snug truncate text-zinc-100">{pr.title}</p>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-xs font-mono text-violet-400">#{pr.number}</span>
-            <span className="text-xs text-zinc-500 flex items-center gap-1">
-              <User className="w-3 h-3" />
+    <button
+      onClick={onClick}
+      className="w-full text-left relative transition-all"
+      style={{ background: bg, border, borderRadius: 4, padding: '8px 10px' }}
+      onMouseEnter={e => { if (!isSelected) { e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; e.currentTarget.style.border = '1px solid #2a2a2a'; } }}
+      onMouseLeave={e => { if (!isSelected) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.border = '1px solid transparent'; } }}
+    >
+      {isSelected && (
+        <span
+          className="absolute left-0 top-1/2 -translate-y-1/2 rounded-r-full"
+          style={{ width: 2, height: 20, background: '#4f6ef7' }}
+        />
+      )}
+      <div className="flex items-start gap-2 pl-1">
+        <div className="flex-1 min-w-0">
+          <p
+            className="text-xs font-medium leading-snug line-clamp-2"
+            style={{ color: isSelected ? 'var(--foreground)' : 'var(--text-body-soft)' }}
+          >
+            {pr.title}
+          </p>
+          <div className="flex items-center gap-2 mt-1.5">
+            <span className="text-[10px] font-semibold" style={{ fontFamily: 'var(--font-geist-mono)', color: '#4f6ef7' }}>
+              #{pr.number}
+            </span>
+            <span className="text-[10px]" style={{ color: 'var(--text-label)' }}>
               {pr.author}
+            </span>
+            {pr.draft && (
+              <span className="text-[10px] italic" style={{ color: 'var(--muted-foreground)' }}>draft</span>
+            )}
+          </div>
+        </div>
+        {isRunning
+          ? <Loader2 className="w-3 h-3 animate-spin shrink-0 mt-0.5" style={{ color: '#4f6ef7' }} />
+          : isReviewed
+          ? <CheckCircle2 className="w-3 h-3 shrink-0 mt-0.5 text-emerald-500" />
+          : null
+        }
+      </div>
+    </button>
+  );
+}
+
+// ─── Ready to review ──────────────────────────────────────────────────────────
+
+function ReadyToReview({ pr, onReview }: { pr: PR; onReview: () => void }) {
+  return (
+    <div className="space-y-6">
+      {/* Terminal-style panel header */}
+      <div
+        className="rounded"
+        style={{ border: '1px solid #2a2a2a', background: '#1c1c1c' }}
+      >
+        <div
+          className="flex items-center justify-between px-4 py-2"
+          style={{ borderBottom: '1px solid #2a2a2a' }}
+        >
+          <span
+            className="text-[10px] font-semibold tracking-widest"
+            style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-label)' }}
+          >
+            PR_DETAILS
+          </span>
+          <a
+            href={pr.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 transition-colors text-[10px]"
+            style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-label)' }}
+            onMouseEnter={e => (e.currentTarget.style.color = '#4f6ef7')}
+            onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-label)')}
+          >
+            <ExternalLink className="w-3 h-3" />
+            VIEW_ON_GITHUB
+          </a>
+        </div>
+        <div className="px-4 py-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <span
+              className="text-[10px] font-semibold"
+              style={{ fontFamily: 'var(--font-geist-mono)', color: '#4f6ef7' }}
+            >
+              #{pr.number}
+            </span>
+            {pr.draft && (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded"
+                style={{ border: '1px solid #2a2a2a', color: 'var(--text-label)', fontFamily: 'var(--font-geist-mono)' }}
+              >
+                DRAFT
+              </span>
+            )}
+          </div>
+          <h1 className="text-base font-semibold text-white leading-snug">{pr.title}</h1>
+          <div className="flex items-center gap-4">
+            <span className="text-[11px]" style={{ color: 'var(--text-meta)' }}>
+              <span style={{ color: 'var(--text-label)' }}>author:</span> {pr.author}
+            </span>
+            <span className="text-[11px]" style={{ color: 'var(--text-label)' }}>
+              {formatPrDate(pr.createdAt)}
             </span>
           </div>
         </div>
-        {pr.draft && (
-          <Badge variant="outline" className="text-xs border-zinc-700 text-zinc-500 shrink-0">
-            Draft
-          </Badge>
-        )}
       </div>
-      <Button
-        size="sm"
-        onClick={onReview}
-        disabled={disabled}
-        className="w-full h-7 text-xs bg-violet-600 hover:bg-violet-500 text-white"
+
+      {/* Agent execute block */}
+      <div
+        className="rounded"
+        style={{ border: '1px solid #2a2a2a', background: '#1c1c1c' }}
       >
-        {isReviewing ? (
-          <>
-            <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-            Reviewing…
-          </>
-        ) : (
-          'Review with AI'
-        )}
-      </Button>
+        <div
+          className="flex items-center px-4 py-2"
+          style={{ borderBottom: '1px solid #2a2a2a' }}
+        >
+          <span
+            className="text-[10px] font-semibold tracking-widest"
+            style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-label)' }}
+          >
+            AGENT_EXECUTE
+          </span>
+        </div>
+        <div className="px-4 py-4">
+          <div
+            className="rounded px-3 py-2.5 mb-4 space-y-1"
+            style={{ background: '#161616', border: '1px solid #222' }}
+          >
+            {['GITHUB_GET_A_PULL_REQUEST', 'GITHUB_LIST_PULL_REQUESTS_FILES', 'GITHUB_CREATE_A_REVIEW_FOR_A_PULL_REQUEST', 'SLACK_SEND_MESSAGE'].map((tool) => (
+              <div key={tool} className="flex items-center gap-2">
+                <span className="w-1 h-1 rounded-full" style={{ background: 'var(--text-faint)' }} />
+                <span
+                  className="text-[10px]"
+                  style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-meta)' }}
+                >
+                  {tool}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-between">
+            <p className="text-xs" style={{ color: 'var(--text-meta)' }}>
+              Claude reads the diff · posts inline comments · sends Slack summary
+            </p>
+            <Button
+              onClick={onReview}
+              className="shrink-0 text-white text-xs px-4 h-8 rounded gap-1.5 font-medium transition-colors"
+              style={{ background: '#4f6ef7', border: 'none' }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#6278f8')}
+              onMouseLeave={e => (e.currentTarget.style.background = '#4f6ef7')}
+            >
+              <Sparkles className="w-3 h-3" />
+              RUN_REVIEW
+            </Button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
+// ─── Agent running ────────────────────────────────────────────────────────────
+
 function AgentRunning({ prNumber }: { prNumber: number }) {
   const steps = [
-    'Fetching PR metadata…',
-    'Reading changed files and diffs…',
-    'Analyzing code with Claude…',
-    'Posting review comments to GitHub…',
-    'Sending summary to Slack…',
+    'GITHUB_GET_A_PULL_REQUEST',
+    'GITHUB_LIST_PULL_REQUESTS_FILES',
+    'Analyzing diff with claude-sonnet-4-6',
+    'GITHUB_CREATE_A_REVIEW_FOR_A_PULL_REQUEST',
+    'SLACK_SEND_MESSAGE',
   ];
   const [step, setStep] = useState(0);
-
   useEffect(() => {
     const id = setInterval(() => setStep((s) => Math.min(s + 1, steps.length - 1)), 4500);
     return () => clearInterval(id);
   }, [steps.length]);
 
   return (
-    <div className="rounded-xl border border-violet-800/50 bg-violet-950/20 p-6">
-      <div className="flex items-center gap-3 mb-5">
-        <Loader2 className="w-5 h-5 text-violet-400 animate-spin" />
-        <div>
-          <p className="font-medium text-violet-300">Agent running on PR #{prNumber}</p>
-          <p className="text-xs text-violet-400/70 mt-0.5">
-            Claude is reviewing the code via Composio tools
-          </p>
-        </div>
+    <div className="rounded" style={{ border: '1px solid rgba(79,110,247,0.3)', background: '#1a1d2e' }}>
+      <div
+        className="flex items-center justify-between px-4 py-2"
+        style={{ borderBottom: '1px solid rgba(79,110,247,0.2)' }}
+      >
+        <span
+          className="text-[10px] font-semibold tracking-widest"
+          style={{ fontFamily: 'var(--font-geist-mono)', color: '#4f6ef7' }}
+        >
+          AGENT_RUNNING
+        </span>
+        <span
+          className="text-[10px]"
+          style={{ fontFamily: 'var(--font-geist-mono)', color: '#4f6ef7', opacity: 0.6 }}
+        >
+          PR_{prNumber}
+        </span>
       </div>
-      <div className="space-y-2.5">
+      <div className="px-4 py-4 space-y-2.5">
         {steps.map((s, i) => (
           <div
             key={i}
-            className={`flex items-center gap-2.5 text-sm transition-all duration-500 ${
-              i <= step ? 'opacity-100' : 'opacity-20'
-            }`}
+            className="flex items-center gap-3 transition-opacity duration-500"
+            style={{ opacity: i <= step ? 1 : 0.2 }}
           >
-            {i < step ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-            ) : i === step ? (
-              <Loader2 className="w-4 h-4 text-violet-400 animate-spin shrink-0" />
-            ) : (
-              <div className="w-4 h-4 rounded-full border border-zinc-700 shrink-0" />
-            )}
-            <span
-              className={
-                i === step
-                  ? 'text-violet-200'
-                  : i < step
-                  ? 'text-zinc-400'
-                  : 'text-zinc-600'
+            <div className="w-4 h-4 shrink-0 flex items-center justify-center">
+              {i < step
+                ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                : i === step
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: '#4f6ef7' }} />
+                : <span className="w-1 h-1 rounded-full" style={{ background: '#2a2a2a' }} />
               }
+            </div>
+            <span
+              className="text-[11px]"
+              style={{
+                fontFamily: 'var(--font-geist-mono)',
+                color: i === step ? 'var(--foreground)' : i < step ? 'var(--text-label)' : 'var(--text-faint)',
+              }}
             >
               {s}
             </span>
@@ -355,124 +515,188 @@ function AgentRunning({ prNumber }: { prNumber: number }) {
   );
 }
 
-function ReviewPanel({
-  review,
-  toolsExpanded,
-  onToggleTools,
-}: {
-  review: Review;
-  toolsExpanded: boolean;
-  onToggleTools: () => void;
+// ─── Error panel ──────────────────────────────────────────────────────────────
+
+function ErrorPanel({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  return (
+    <div className="rounded" style={{ border: '1px solid rgba(239,68,68,0.2)', background: 'rgba(239,68,68,0.06)' }}>
+      <div
+        className="flex items-center gap-2 px-4 py-2"
+        style={{ borderBottom: '1px solid rgba(239,68,68,0.15)' }}
+      >
+        <AlertCircle className="w-3 h-3 text-red-400" />
+        <span
+          className="text-[10px] font-semibold tracking-widest text-red-400"
+          style={{ fontFamily: 'var(--font-geist-mono)' }}
+        >
+          REVIEW_FAILED
+        </span>
+      </div>
+      <div className="px-4 py-4">
+        <p className="text-xs mb-4" style={{ color: 'var(--text-body-soft)', lineHeight: 1.6 }}>{message}</p>
+        <button
+          onClick={onDismiss}
+          className="text-[10px] transition-colors"
+          style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-label)' }}
+          onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-body-soft)')}
+          onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-label)')}
+        >
+          DISMISS
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Review panel ─────────────────────────────────────────────────────────────
+
+function ReviewPanel({ review, toolsExpanded, onToggleTools }: {
+  review: Review; toolsExpanded: boolean; onToggleTools: () => void;
 }) {
+  const highCount   = review.issues.filter(i => i.severity === 'high').length;
+  const mediumCount = review.issues.filter(i => i.severity === 'medium').length;
+  const lowCount    = review.issues.filter(i => (i.severity ?? 'low') === 'low').length;
+
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-            <h2 className="font-semibold text-zinc-100">
-              Review complete — PR #{review.prNumber}
-            </h2>
-          </div>
-          <p className="text-xs text-zinc-500 mt-0.5 ml-7">{review.prTitle}</p>
+
+      {/* Status bar */}
+      <div
+        className="rounded px-4 py-3 flex items-center justify-between flex-wrap gap-3"
+        style={{ border: '1px solid #2a2a2a', background: '#1c1c1c' }}
+      >
+        <div className="flex items-center gap-2">
+          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+          <span className="text-xs font-medium text-white">PR #{review.prNumber}</span>
+          <span className="text-xs" style={{ color: 'var(--text-meta)' }}>{review.prTitle}</span>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <Badge className="bg-emerald-900/50 text-emerald-400 border-emerald-800/50 text-xs border">
-            Posted to GitHub
-          </Badge>
-          <Badge className="bg-blue-900/50 text-blue-400 border-blue-800/50 text-xs border">
-            Sent to Slack
-          </Badge>
+        <div className="flex items-center gap-2">
+          <StatusChip color="emerald" label="GITHUB_REVIEW_POSTED" />
+          <StatusChip color="blue"    label="SLACK_NOTIFIED" />
         </div>
       </div>
 
-      <Separator className="bg-zinc-800" />
+      {/* Severity counts */}
+      {review.issues.length > 0 && (
+        <div className="flex items-center gap-3">
+          <span className="text-[10px]" style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-label)' }}>
+            ISSUES:
+          </span>
+          {highCount > 0 && (
+            <span className="flex items-center gap-1 text-[10px]" style={{ fontFamily: 'var(--font-geist-mono)' }}>
+              <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+              <span className="text-red-400">{highCount}_high</span>
+            </span>
+          )}
+          {mediumCount > 0 && (
+            <span className="flex items-center gap-1 text-[10px]" style={{ fontFamily: 'var(--font-geist-mono)' }}>
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              <span className="text-amber-400">{mediumCount}_medium</span>
+            </span>
+          )}
+          {lowCount > 0 && (
+            <span className="flex items-center gap-1 text-[10px]" style={{ fontFamily: 'var(--font-geist-mono)' }}>
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+              <span className="text-slate-400">{lowCount}_low</span>
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Summary */}
-      <Card className="bg-zinc-900 border-zinc-800">
-        <CardHeader className="pb-2 pt-4 px-4">
-          <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-            <MessageSquare className="w-4 h-4 text-violet-400" />
-            Summary
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="px-4 pb-4">
-          <p className="text-sm text-zinc-300 leading-relaxed">{review.summary}</p>
-        </CardContent>
-      </Card>
+      <Section label="REVIEW_SUMMARY">
+        <p className="text-sm leading-relaxed" style={{ color: 'var(--text-body-soft)' }}>{review.summary}</p>
+      </Section>
 
       {/* Issues */}
       {review.issues.length > 0 && (
-        <Card className="bg-zinc-900 border-zinc-800">
-          <CardHeader className="pb-2 pt-4 px-4">
-            <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-amber-400" />
-              Issues Found
-              <Badge className="bg-amber-900/40 text-amber-400 border-amber-800/40 border text-xs ml-auto">
-                {review.issues.length}
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="px-4 pb-4 space-y-3">
+        <Section label={`FINDINGS  // ${review.issues.length} total`}>
+          <div className="space-y-2">
             {review.issues.map((issue, i) => {
               const sev = issue.severity ?? 'low';
               return (
-                <div key={i} className="rounded-lg bg-zinc-800/60 p-3">
-                  <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <code className="text-xs text-violet-300 font-mono">{issue.file}</code>
-                    {issue.line > 0 && (
-                      <Badge variant="outline" className="text-xs border-zinc-700 text-zinc-500 px-1.5 py-0">
-                        line {issue.line}
-                      </Badge>
-                    )}
-                    <Badge className={`text-xs border px-1.5 py-0 ml-auto capitalize ${SEVERITY_STYLES[sev]}`}>
+                <div
+                  key={i}
+                  className="rounded px-3 py-3"
+                  style={{ border: '1px solid #242424', background: '#181818' }}
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${SEV_DOT[sev]}`} />
+                    <code
+                      className="text-[11px]"
+                      style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-meta)' }}
+                    >
+                      {issue.file}
+                      {issue.line > 0 && <span style={{ color: 'var(--text-label)' }}>:{issue.line}</span>}
+                    </code>
+                    <span
+                      className={`ml-auto text-[10px] uppercase font-semibold ${SEV_TEXT[sev]}`}
+                      style={{ fontFamily: 'var(--font-geist-mono)' }}
+                    >
                       {sev}
-                    </Badge>
+                    </span>
                   </div>
-                  <p className="text-sm text-zinc-400">{issue.description}</p>
+                  <p className="text-[11px] leading-relaxed pl-3.5" style={{ color: 'var(--text-body-soft)' }}>
+                    {issue.description}
+                  </p>
                 </div>
               );
             })}
-          </CardContent>
-        </Card>
+          </div>
+        </Section>
       )}
 
       {/* Top suggestion */}
       {review.suggestion && (
-        <div className="rounded-lg border border-blue-800/40 bg-blue-950/20 p-4">
-          <p className="text-xs font-medium text-blue-400 mb-1">Top suggestion</p>
-          <p className="text-sm text-blue-200/80">{review.suggestion}</p>
-        </div>
+        <Section label="TOP_SUGGESTION">
+          <div
+            className="rounded px-3 py-3"
+            style={{ border: '1px solid rgba(79,110,247,0.2)', background: 'rgba(79,110,247,0.06)' }}
+          >
+            <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-body-soft)' }}>{review.suggestion}</p>
+          </div>
+        </Section>
       )}
 
-      {/* Tool call log */}
-      <div className="rounded-lg border border-zinc-800 overflow-hidden">
+      {/* Agent trace */}
+      <div style={{ borderTop: '1px solid #222', paddingTop: 12 }}>
         <button
           onClick={onToggleTools}
-          className="w-full flex items-center justify-between px-4 py-3 text-sm text-zinc-400 hover:bg-zinc-800/50 transition-colors"
+          className="w-full flex items-center justify-between py-1 group transition-colors"
         >
-          <span className="flex items-center gap-2">
-            <Wrench className="w-4 h-4 text-zinc-500" />
-            Agent tool calls
-            <Badge variant="outline" className="text-xs border-zinc-700 text-zinc-500 px-1.5 py-0">
-              {review.toolCalls.length}
-            </Badge>
+          <span
+            className="flex items-center gap-2 text-[10px] font-semibold tracking-widest"
+            style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-label)' }}
+          >
+            AGENT_TRACE
+            <span className="font-normal normal-case" style={{ color: 'var(--text-faint)' }}>
+              // {review.toolCalls.length} calls
+            </span>
           </span>
-          {toolsExpanded ? (
-            <ChevronUp className="w-4 h-4" />
-          ) : (
-            <ChevronDown className="w-4 h-4" />
-          )}
+          {toolsExpanded
+            ? <ChevronUp className="w-3 h-3" style={{ color: 'var(--text-label)' }} />
+            : <ChevronDown className="w-3 h-3" style={{ color: 'var(--text-label)' }} />
+          }
         </button>
         {toolsExpanded && (
-          <div className="border-t border-zinc-800 px-4 py-3 space-y-2.5 bg-zinc-900/50">
+          <div
+            className="mt-2 rounded"
+            style={{ border: '1px solid #242424', background: '#181818' }}
+          >
             {review.toolCalls.map((call, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                <span className="text-xs text-zinc-300">
+              <div
+                key={i}
+                className="flex items-center gap-3 px-3.5 py-2.5"
+                style={{ borderBottom: i < review.toolCalls.length - 1 ? '1px solid #222' : 'none' }}
+              >
+                <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
+                <span className="text-xs" style={{ color: 'var(--text-meta)' }}>
                   {TOOL_LABELS[call] ?? call}
                 </span>
-                <code className="text-xs text-zinc-600 font-mono ml-auto hidden sm:block">
+                <code
+                  className="ml-auto text-[10px] hidden sm:block"
+                  style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-faint)' }}
+                >
                   {call}
                 </code>
               </div>
@@ -484,40 +708,61 @@ function ReviewPanel({
   );
 }
 
-function HistoryCard({ review, onClick }: { review: Review; onClick: () => void }) {
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <button
-      onClick={onClick}
-      className="w-full text-left rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 hover:border-zinc-700 hover:bg-zinc-900 transition-colors"
-    >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-          <span className="text-sm text-zinc-300 truncate">{review.prTitle}</span>
-          <span className="text-xs font-mono text-violet-400 shrink-0">#{review.prNumber}</span>
-        </div>
-        <div className="flex items-center gap-1 text-xs text-zinc-600 shrink-0">
-          <Clock className="w-3 h-3" />
-          {new Date(review.createdAt).toLocaleDateString()}
-        </div>
+    <div className="rounded" style={{ border: '1px solid #2a2a2a', background: '#1c1c1c' }}>
+      <div
+        className="px-4 py-2"
+        style={{ borderBottom: '1px solid #252525' }}
+      >
+        <span
+          className="text-[10px] font-semibold tracking-widest"
+          style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-label)' }}
+        >
+          {label}
+        </span>
       </div>
-      {review.issues.length > 0 && (
-        <p className="text-xs text-zinc-500 mt-1 ml-5">
-          {review.issues.length} issue{review.issues.length !== 1 ? 's' : ''} found
-        </p>
-      )}
-    </button>
+      <div className="px-4 py-4">{children}</div>
+    </div>
   );
 }
 
+function StatusChip({ color, label }: { color: 'emerald' | 'blue'; label: string }) {
+  const styles = {
+    emerald: { border: '1px solid rgba(52,211,153,0.2)', background: 'rgba(52,211,153,0.07)', color: '#34d399' },
+    blue:    { border: '1px solid rgba(79,110,247,0.25)', background: 'rgba(79,110,247,0.08)', color: '#4f6ef7' },
+  }[color];
+
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded"
+      style={{ fontFamily: 'var(--font-geist-mono)', ...styles }}
+    >
+      <span className="w-1 h-1 rounded-full" style={{ background: styles.color }} />
+      {label}
+    </span>
+  );
+}
+
+// ─── Empty state ──────────────────────────────────────────────────────────────
+
 function EmptyState() {
   return (
-    <div className="flex flex-col items-center justify-center h-full min-h-[400px] gap-3 text-zinc-600">
-      <GitPullRequest className="w-12 h-12 opacity-20" />
-      <div className="text-center">
-        <p className="text-sm font-medium text-zinc-500">No reviews yet</p>
-        <p className="text-xs mt-1 text-zinc-600">
-          Select a pull request and click &quot;Review with AI&quot;
+    <div className="flex flex-col items-center justify-center h-full gap-3">
+      <div
+        className="w-12 h-12 rounded-xl flex items-center justify-center"
+        style={{ border: '1px solid #2a2a2a', background: '#1c1c1c' }}
+      >
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <path d="M10 3C6.13 3 3 6.13 3 10s3.13 7 7 7 7-3.13 7-7-3.13-7-7-7zm0 2c1.2 0 2.32.38 3.24 1.02L5.02 13.24A4.96 4.96 0 015 10c0-2.76 2.24-5 5-5zm0 10c-1.2 0-2.32-.38-3.24-1.02l8.22-8.22A4.96 4.96 0 0115 10c0 2.76-2.24 5-5 5z" fill="var(--text-faint)"/>
+        </svg>
+      </div>
+      <div className="text-center space-y-1">
+        <p className="text-sm" style={{ color: 'var(--text-meta)' }}>No pull request selected</p>
+        <p className="text-xs" style={{ fontFamily: 'var(--font-geist-mono)', color: 'var(--text-faint)' }}>
+          // select a PR from the sidebar
         </p>
       </div>
     </div>
