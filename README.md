@@ -1,3 +1,5 @@
+[![Repo pet](http://localhost:3001/badge/rosho19/test-pr-agent)](http://localhost:3001/setup)
+
 # PR Review Agent
 
 An AI-powered pull request reviewer built with [Composio](https://composio.dev) + [Claude](https://anthropic.com). Point it at any GitHub repo and it will automatically read the diff, post inline review comments, and send a Slack summary — all driven by a Claude agentic loop with Composio-managed GitHub and Slack integrations.
