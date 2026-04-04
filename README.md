@@ -1,4 +1,4 @@
-[![Repo pet](http://localhost:3001/badge/rosho19/test-pr-agent)](http://localhost:3001/setup)
+[![Repo pet](http://localhost:3001/badge/rosho19/test-pr-agent)](http://localhost:3001/view/rosho19/test-pr-agent)
 
 
 # PR Review Agent
